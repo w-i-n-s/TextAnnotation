@@ -197,7 +197,7 @@ class TAContainerView: NSView {
     }
     
     var activateResponder: TAActivateResponder?
-    var text: String! {
+    var text: String = "" {
         didSet {
             guard textView != nil else { return }
             textView.string = text
@@ -213,6 +213,9 @@ class TAContainerView: NSView {
             updateSubviewsFrames()
         }
     }
+    var endOfTheCanvasWasReached: Bool = false
+    
+    weak var delegate: TextAnnotationDelegate!
     
     // MARK: Private
     
@@ -315,6 +318,16 @@ class TAContainerView: NSView {
     }
     
     private func updateFrameWithText(_ string: String) {
+        guard !endOfTheCanvasWasReached else {
+            let width = textView.bounds.width
+            let textFrame = textView.frameForWidth(width, height: CGFloat.greatestFiniteMagnitude)
+            let height = textFrame.height + 2*kPadding
+            frame = CGRect(origin: CGPoint(x: frame.origin.x, y: frame.origin.y - (frame.height - height)),
+                           size: CGSize(width: frame.width, height: height))
+            
+            return
+        }
+        
         let center = CGPoint(x: NSMidX(frame), y: NSMidY(frame))
         
         var textFrame = textView.frameForWidth(CGFloat.greatestFiniteMagnitude, height: textView.bounds.height)
@@ -413,6 +426,9 @@ extension TAContainerView: NSTextViewDelegate {
     
     func textDidChange(_ notification: Notification) {
         updateFrameWithText(textView.string)
+        
+        guard let theDelegate = delegate else { return }
+        theDelegate.textAnnotationDidEdit(textAnnotation: self)
     }
 }
 
@@ -420,6 +436,21 @@ extension TAContainerView: TAActivateResponder {
     func textViewDidActivate(_ activeItem: Any?) {
         // After we reach the .editing state - we should not switch it back to .active, only on .inactive on complete edit
         state = textView.isEditable ? .editing : .active
+    }
+}
+
+extension TAContainerView: TextAnnotation {
+    func reachEndOfTheCanvasWithOverlap(_ overlap: CGFloat) {
+        endOfTheCanvasWasReached = true
+        var theFrame = frame
+        theFrame.size = CGSize(width: theFrame.width - overlap, height: theFrame.height)
+        frame = theFrame
+        
+        // Here we have to drop text to the next line
+        
+        var text = textView.string
+        text.insert("\n", at: text.index(text.endIndex, offsetBy: -1))
+        updateFrameWithText(text)
     }
 }
 
@@ -457,6 +488,7 @@ class ViewController: NSViewController, TextAnnotationsController {
         let size = CGSize.zero
         
         let view1 = TAContainerView(frame: NSRect(origin: CGPoint(x: 100, y: 150), size: size))
+        view1.delegate = self
         view1.text = "1"
         view1.activateResponder = self
         view.addSubview(view1)
@@ -464,6 +496,7 @@ class ViewController: NSViewController, TextAnnotationsController {
         
         let view2 = TAContainerView(frame: NSRect(origin: CGPoint(x: 50, y: 20), size: size))
         view2.text = "2"
+        view2.delegate = self
         view2.activateResponder = self
         view.addSubview(view2)
         annotations.append(view2)
@@ -591,10 +624,15 @@ class ViewController: NSViewController, TextAnnotationsController {
 
 extension ViewController: TextAnnotationDelegate {
     func textAnnotationDidEdit(textAnnotation: TextAnnotation) {
-        print(textAnnotation.text)
+        if !textAnnotation.endOfTheCanvasWasReached {
+            let overlap = textAnnotation.frame.origin.x + textAnnotation.frame.width - view.bounds.width
+            if overlap > 0 {
+                textAnnotation.reachEndOfTheCanvasWithOverlap(overlap)
+            }
+        }
     }
     
-    func textAnnotationDidMove(textAnnotation: TextAnnotation) {
+    func textAnnotationDidMove(textAnnotation: TextAnnotation) { #warning ("Annotation cannot move itself, only by mouseDragged(with:) event. No reason to implement it")
         print(textAnnotation.frame)
     }
 }
