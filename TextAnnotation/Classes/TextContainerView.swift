@@ -22,20 +22,23 @@ public protocol ActivateResponder: class {
 }
 
 open class TextContainerView: NSView {
-    // MARK: - Variables
+  public var delegate: TextAnnotationDelegate?
   
   public var state: TextAnnotationState = .inactive {
         didSet {          
-            guard state != oldValue else { return }
+            guard state != oldValue, let theTextView = textView else { return }
             
             var isActive: Bool = false
             if state == .inactive {
-                textView.isEditable = false
-                textView.isSelectable = false
-                doubleClickGestureRecognizer.isEnabled = !textView.isEditable
+                let selected = theTextView.selectedRange().upperBound
+                let range = NSRange(location: selected == 0 ? theTextView.string.count : selected, length: 0)
+                
+                theTextView.setSelectedRange(range)
+                theTextView.isEditable = false
+                doubleClickGestureRecognizer.isEnabled = !theTextView.isEditable
             } else {
                 if state == .scaling {
-                    textView.calculateScaleRatio()
+                    theTextView.calculateScaleRatio()
                 }
                 
                 isActive = true
@@ -46,6 +49,8 @@ open class TextContainerView: NSView {
             }
             
             singleClickGestureRecognizer.isEnabled = state == .inactive
+            
+            theTextView.isSelectable = isActive
             
             backgroundView.isHidden = !isActive
             backgroundView.display()
@@ -70,14 +75,15 @@ open class TextContainerView: NSView {
     
     public var text: String = "" {
         didSet {
-            guard textView != nil else { return }
-            textView.string = text
-            updateFrameWithText(textView.string)
+            guard let theTextView = textView else { return }
+            theTextView.string = text
+            updateFrameWithText(theTextView.string)
         }
     }
     var leftTally: MouseTrackingView?
     var rightTally: MouseTrackingView?
     var scaleTally: KnobView?
+  
     
     // MARK: Private
     
@@ -91,6 +97,7 @@ open class TextContainerView: NSView {
     private var doubleClickGestureRecognizer: NSClickGestureRecognizer!
   
     private var lastMouseLocation: NSPoint?
+    private var didMove = false
   
     private var cursorSet = CursorSet.shared
   
@@ -178,6 +185,10 @@ open class TextContainerView: NSView {
       height: locationInWindow.y - lastMouseLocation.y
     )
     
+    if difference.width > 0 || difference.height > 0 {
+      didMove = true
+    }
+    
     self.lastMouseLocation = locationInWindow
     
     switch state {
@@ -194,21 +205,27 @@ open class TextContainerView: NSView {
   
   open override func mouseUp(with event: NSEvent) {
     state = .active
-
+    
+    if didMove {
+      delegate?.textAnnotationDidMove(textAnnotation: self)
+      didMove = false
+    }
+    
     lastMouseLocation = nil
   }
     
     @objc private func singleClickGestureHandle(_ gesture: NSClickGestureRecognizer) {
         guard let theTextView = textView, !theTextView.isEditable else { return }
         state = .active
+      
+        delegate?.textAnnotationDidSelect(textAnnotation: self)
     }
     
     @objc private func doubleClickGestureHandle(_ gesture: NSClickGestureRecognizer) {
-        guard let theTextView = textView, !theTextView.isEditable else { return }
+        guard let theTextView = textView else { return }
         
         state = .editing
-        textView.isSelectable = true
-        theTextView.isEditable = true
+        startEditing()
         doubleClickGestureRecognizer.isEnabled = !theTextView.isEditable
         
         guard let responder = activateResponder else { return }
@@ -216,14 +233,15 @@ open class TextContainerView: NSView {
     }
     
     private func updateFrameWithText(_ string: String) {
+        guard let theTextView = textView else { return }
         let center = CGPoint(x: NSMidX(frame), y: NSMidY(frame))
         
-        var textFrame = textView.frameForWidth(CGFloat.greatestFiniteMagnitude, height: textView.bounds.height)
-        let width = max(textFrame.width + textView.twoSymbolsWidth, textView.bounds.width)
+        var textFrame = theTextView.frameForWidth(CGFloat.greatestFiniteMagnitude, height: theTextView.bounds.height)
+        let width = max(textFrame.width + theTextView.twoSymbolsWidth, theTextView.bounds.width)
         
         // We should use minimal value to get height. Because of multiline.
-        let minWidth = min(textFrame.width + textView.twoSymbolsWidth, textView.bounds.width)
-        textFrame = textView.frameForWidth(minWidth, height: CGFloat.greatestFiniteMagnitude)
+        let minWidth = min(textFrame.width + theTextView.twoSymbolsWidth, textView.bounds.width)
+        textFrame = theTextView.frameForWidth(minWidth, height: CGFloat.greatestFiniteMagnitude)
         let height = textFrame.height
         
         // Now we know text label frame. We should calculate new self.frame and redraw all the subviews
@@ -338,14 +356,15 @@ extension TextContainerView: NSTextViewDelegate {
     // MARK: - NSTextDelegate
     
     open func textDidChange(_ notification: Notification) {
-        updateFrameWithText(textView.string)
+      updateFrameWithText(textView.string)
+      delegate?.textAnnotationDidEdit(textAnnotation: self)
     }
 }
 
 extension TextContainerView: ActivateResponder {
   public func textViewDidActivate(_ activeItem: Any?) {
         // After we reach the .editing state - we should not switch it back to .active, only on .inactive on complete edit
-        state = textView.isEditable ? .editing : .active
+      state = textView.isEditable ? .editing : .active
     }
 }
 
@@ -353,5 +372,24 @@ extension TextContainerView: MouseTrackingResponder {
   public func areaDidActivated(_ area: TextAnnotationArea) {
         guard let areaResponder = activeAreaResponder, state == .active else { return }
         areaResponder.areaDidActivated(area)
+    }
+}
+
+// Extension should be here bacause `var textView: TextView` is private property
+extension TextContainerView: TextAnnotation {
+    public func startEditing() {
+        var window: NSWindow? = NSApplication.shared.mainWindow
+        if window == nil {
+            let list = NSApplication.shared.windows
+            if !list.isEmpty {
+                window = list.first
+            }
+        }
+        
+        if let theWindow = window {
+            textView.isEditable = true
+            textView.isSelectable = true
+            theWindow.makeFirstResponder(textView)
+        }
     }
 }
